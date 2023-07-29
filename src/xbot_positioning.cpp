@@ -20,6 +20,7 @@
 #include "xbot_msgs/WheelTick.h"
 #include "xbot_positioning/KalmanState.h"
 #include "xbot_positioning/GPSControlSrv.h"
+#include "xbot_positioning/GPSEnableFloatRtkSrv.h"
 #include "xbot_positioning/SetPoseSrv.h"
 
 ros::Publisher odometry_pub;
@@ -205,8 +206,8 @@ bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::
 }
 
 bool setGpsFloatRtkEnabled(xbot_positioning::GPSEnableFloatRtkSrvRequest &req, xbot_positioning::GPSEnableFloatRtkSrvResponse &res) {
-    if req.gps_float_rtk_enabled {
-        gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+    if (req.gps_float_rtk_enabled) {
+        gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT | xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     } else {
         gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     }
@@ -233,7 +234,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     }
     // TODO fuse with high covariance?
     if((msg->flags & (gps_precision)) == 0) {
-        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
+        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed. Flags: " << (int)msg->flags << ", precision: " << (int)gps_precision);
         return;
     }
 
