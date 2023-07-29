@@ -68,6 +68,7 @@ xbot_positioning::KalmanState state_msg;
 xbot_msgs::AbsolutePose xb_absolute_pose_msg;
 
 bool gps_enabled = true;
+uint8_t gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
 int gps_outlier_count = 0;
 int valid_gps_samples = 0;
 
@@ -203,6 +204,11 @@ bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::
     return true;
 }
 
+bool setGpsPrecision(xbot_positioning::GPSPrecisionSrvRequest &req, xbot_positioning::GPSPrecisionSrvResponse &res) {
+    gps_precision = req.gps_precision;
+    return true;
+}
+
 bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPoseSrvResponse &res) {
     tf2::Quaternion q;
     tf2::fromMsg(req.robot_pose.orientation, q);
@@ -222,7 +228,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         return;
     }
     // TODO fuse with high covariance?
-    if((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
+    if((msg->flags & (gps_precision)) == 0) {
         ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
         return;
     }
@@ -304,6 +310,7 @@ int main(int argc, char **argv) {
 
     has_gps = false;
     gps_enabled = true;
+    gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     vx = 0.0;
     has_gyro = false;
     has_ticks = false;
@@ -319,6 +326,7 @@ int main(int argc, char **argv) {
     ros::NodeHandle paramNh("~");
 
     ros::ServiceServer gps_service = n.advertiseService("xbot_positioning/set_gps_state", setGpsState);
+    ros::ServiceServer gps_precision_service = n.advertiseService("xbot_positioning/set_gps_precision", setGpsPrecision);
     ros::ServiceServer pose_service = n.advertiseService("xbot_positioning/set_robot_pose", setPose);
 
     paramNh.param("skip_gyro_calibration", skip_gyro_calibration, false);
