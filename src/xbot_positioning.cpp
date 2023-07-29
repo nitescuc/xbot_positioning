@@ -69,7 +69,7 @@ xbot_positioning::KalmanState state_msg;
 xbot_msgs::AbsolutePose xb_absolute_pose_msg;
 
 bool gps_enabled = true;
-uint8_t gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+uint16_t gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
 int gps_outlier_count = 0;
 int valid_gps_samples = 0;
 
@@ -207,9 +207,9 @@ bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::
 
 bool setGpsFloatRtkEnabled(xbot_positioning::GPSEnableFloatRtkSrvRequest &req, xbot_positioning::GPSEnableFloatRtkSrvResponse &res) {
     if (req.gps_float_rtk_enabled) {
-        gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+        gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT | xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     } else {
-        gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+        gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     }
     return true;
 }
@@ -233,8 +233,8 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         return;
     }
     // TODO fuse with high covariance?
-    if((msg->flags & (gps_precision)) == 0) {
-        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
+    if((msg->flags & (gps_precision_flags)) == 0) {
+        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed. Flags: " << (int)msg->flags << ", precision: " << (int)gps_precision_flags);
         return;
     }
 
@@ -315,7 +315,7 @@ int main(int argc, char **argv) {
 
     has_gps = false;
     gps_enabled = true;
-    gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+    gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     vx = 0.0;
     has_gyro = false;
     has_ticks = false;
