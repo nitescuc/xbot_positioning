@@ -29,6 +29,7 @@ add_message_files(
 add_service_files(
         FILES
         GPSControlSrv.srv
+        GPSEnableFloatRtkSrv.srv
         SetPoseSrv.srv
 )
 

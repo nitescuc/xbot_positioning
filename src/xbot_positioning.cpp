@@ -204,8 +204,12 @@ bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::
     return true;
 }
 
-bool setGpsPrecision(xbot_positioning::GPSPrecisionSrvRequest &req, xbot_positioning::GPSPrecisionSrvResponse &res) {
-    gps_precision = req.gps_precision;
+bool setGpsFloatRtkEnabled(xbot_positioning::GPSEnableFloatRtkSrvRequest &req, xbot_positioning::GPSEnableFloatRtkSrvResponse &res) {
+    if req.gps_float_rtk_enabled {
+        gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+    } else {
+        gps_precision = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+    }
     return true;
 }
 
@@ -326,7 +330,7 @@ int main(int argc, char **argv) {
     ros::NodeHandle paramNh("~");
 
     ros::ServiceServer gps_service = n.advertiseService("xbot_positioning/set_gps_state", setGpsState);
-    ros::ServiceServer gps_precision_service = n.advertiseService("xbot_positioning/set_gps_precision", setGpsPrecision);
+    ros::ServiceServer gps_enable_float_rtk_service = n.advertiseService("xbot_positioning/set_float_rtk_enabled", setGpsFloatRtkEnabled);
     ros::ServiceServer pose_service = n.advertiseService("xbot_positioning/set_robot_pose", setPose);
 
     paramNh.param("skip_gyro_calibration", skip_gyro_calibration, false);
