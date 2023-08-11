@@ -228,6 +228,7 @@ bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPose
 }
 
 void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
+    bool gps_degradated = false;
     if(!gps_enabled) {
         ROS_INFO_STREAM_THROTTLE(1, "dropping GPS update, since gps_enabled = false.");
         return;
@@ -241,6 +242,9 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     if(msg->position_accuracy > max_gps_accuracy) {
         ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy << ", limit is:" << max_gps_accuracy);
         return;
+    }
+    if((msg->flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT) != 0) {
+        gps_degradated = true;
     }
 
     double time_since_last_gps = (ros::Time::now() - last_gps_time).toSec();
@@ -273,12 +277,16 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
             ROS_INFO_STREAM("GPS data now valid");
             ROS_INFO_STREAM("First GPS data, moving kalman filter to " << msg->pose.pose.position.x << ", " << msg->pose.pose.position.y);
             // we don't even have gps yet, set odometry to first estimate
-            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, 0.001);
+            float covariance = 1;
+            if (gps_degradated) covariance = 1000;
+            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, covariance);
 
             has_gps = true;
         } else if (has_gps) {
             // gps was valid before, we apply the filter
-            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, 500.0);
+            float covariance = 500;
+            if (gps_degradated) covariance = 1000;
+            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, covariance);
             if(publish_debug) {
                 auto m = core.om2.h(core.ekf.getState());
                 geometry_msgs::Vector3 dbg;
