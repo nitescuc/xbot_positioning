@@ -51,6 +51,13 @@ int gyro_offset_samples;
 
 // Current speed calculated by wheel ticks
 double vx = 0.0;
+bool is_vx_valid = true;
+
+// Current speed computed by the filter
+double filter_vx = 0.0;
+
+// Current angular velocity from Gyro
+double imu_vz = 0.0;
 
 // Min speed for motion vector to be fed into kalman filter
 double min_speed = 0.0;
@@ -105,8 +112,24 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
         }
     }
 
-    core.predict(vx, msg->angular_velocity.z - gyro_offset, (msg->header.stamp - last_imu.header.stamp).toSec());
-    auto x = core.updateSpeed(vx, msg->angular_velocity.z - gyro_offset,0.01);
+    double dt = (msg->header.stamp - last_imu.header.stamp).toSec();
+    double imu_vx = filter_vx + msg->linear_acceleration.x * dt;
+    imu_vz = msg->angular_velocity.z - gyro_offset;
+    // vx and imu_vx are not supposed to be way off (even though accelerometer might not be properly calibrated and have drift) 
+    // so it makes sense to define a covariance based on the difference
+    double vx_covariance = 0.01;
+    double updated_vx = 0.0;
+    if (!is_vx_valid) {
+        updated_vx = imu_vx;
+    }
+    if (vx != 0.0) {
+        vx_covariance = (vx - imu_vx)/vx;
+        // fusion vx and imu_vx with some probability
+        updated_vx = (vx + 3*imu_vx)/vx;
+    }
+
+    core.predict(updated_vx, msg->angular_velocity.z - gyro_offset, dt);
+    auto x = core.updateSpeed(updated_vx, msg->angular_velocity.z - gyro_offset, vx_covariance*vx_covariance);
 
     odometry.header.stamp = ros::Time::now();
     odometry.header.seq++;
@@ -129,8 +152,9 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     static tf2_ros::TransformBroadcaster transform_broadcaster;
     transform_broadcaster.sendTransform(odom_trans);
 
+    auto state = core.getState();
+    filter_vx = state.vx();
     if(publish_debug) {
-        auto state = core.getState();
         state_msg.x = state.x();
         state_msg.y = state.y();
         state_msg.theta = state.theta();
@@ -193,11 +217,29 @@ void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
         d_wheel_r *= -1.0;
     }
 
-
     double d_ticks = (d_wheel_l + d_wheel_r) / 2.0;
     vx = d_ticks / dt;
 
     last_ticks = *msg;
+
+    // detect wheel sliping
+
+    // wheel angular speed should be consistent with imu_vz
+    double angular_speed = (d_wheel_r - d_wheel_l)/(0.3 * dt);
+    if(abs(angular_speed - imu_vz) > 0.2) {
+        ROS_INFO_STREAM_THROTTLE(1, "got angular_speed different of imu_vz (" << angular_speed << ", " << imu_vz << ") - drop ?");
+        // TODO: decide to drop or estimate a speed ?
+    } 
+
+    // consider max possible robot speed of 0.50 (TODO get it from parameters)
+    if(vx > 0.5) {
+        ROS_INFO_STREAM_THROTTLE(1, "got vx > 0.50 (" << vx << ") - dropping measurement");
+        vx = 0.0;
+        is_vx_valid = false;
+        return;
+    }
+
+    is_vx_valid = true;
 }
 
 bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::GPSControlSrvResponse &res) {
@@ -284,7 +326,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
             has_gps = true;
         } else if (has_gps) {
             // gps was valid before, we apply the filter
-            float covariance = 500;
+            float covariance = 250;
             if (gps_degradated) covariance = 1000;
             core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, covariance);
             if(publish_debug) {
@@ -298,6 +340,8 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
                 core.updateOrientation2(msg->motion_vector.x, msg->motion_vector.y, 10000.0);
             }
         }
+        auto m = core.om2.h(core.ekf.getState());
+        filter_vx = m.vx();
     } else {
         ROS_WARN_STREAM("GPS outlier found. Distance was: " << distance_to_last_gps);
         gps_outlier_count++;
@@ -325,6 +369,8 @@ int main(int argc, char **argv) {
     gps_enabled = true;
     gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
     vx = 0.0;
+    filter_vx = 0.0;
+    is_vx_valid = true;
     has_gyro = false;
     has_ticks = false;
     gyro_offset = 0;
