@@ -119,13 +119,15 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     // so it makes sense to define a covariance based on the difference
     double vx_covariance = 0.01;
     double updated_vx = 0.0;
-    if (!is_vx_valid) {
+    if (is_vx_valid) {
+        // fusion vx and imu_vx with some probability
+        updated_vx = (vx + 3*imu_vx)/4;
+    } else {
         updated_vx = imu_vx;
+        ROS_WARN_STREAM("vx invalid, using filered vx=" << updated_vx);
     }
     if (vx != 0.0) {
         vx_covariance = (vx - imu_vx)/vx;
-        // fusion vx and imu_vx with some probability
-        updated_vx = (vx + 3*imu_vx)/vx;
     }
 
     core.predict(updated_vx, msg->angular_velocity.z - gyro_offset, dt);
@@ -225,15 +227,17 @@ void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
     // detect wheel sliping
 
     // wheel angular speed should be consistent with imu_vz
-    double angular_speed = (d_wheel_r - d_wheel_l)/(0.3 * dt);
-    if(abs(angular_speed - imu_vz) > 0.2) {
-        ROS_INFO_STREAM_THROTTLE(1, "got angular_speed different of imu_vz (" << angular_speed << ", " << imu_vz << ") - drop ?");
-        // TODO: decide to drop or estimate a speed ?
+    double angular_speed = (d_wheel_r - d_wheel_l)/dt;
+    if(abs(angular_speed) > 4) {
+        ROS_WARN_STREAM("got angular_speed different of imu_vz (" << angular_speed << ", " << imu_vz << ") - droping vx");
+        vx = 0.0;
+        is_vx_valid = false;
+        return;
     } 
 
     // consider max possible robot speed of 0.50 (TODO get it from parameters)
-    if(vx > 0.5) {
-        ROS_INFO_STREAM_THROTTLE(1, "got vx > 0.50 (" << vx << ") - dropping measurement");
+    if(abs(vx) > 1.0) {
+        ROS_WARN_STREAM("got vx > 1.0 (" << vx << ") - dropping measurement");
         vx = 0.0;
         is_vx_valid = false;
         return;
@@ -320,14 +324,14 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
             ROS_INFO_STREAM("First GPS data, moving kalman filter to " << msg->pose.pose.position.x << ", " << msg->pose.pose.position.y);
             // we don't even have gps yet, set odometry to first estimate
             float covariance = 1;
-            if (gps_degradated) covariance = 1000;
+            if (gps_degradated) covariance = 2000;
             core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, covariance);
 
             has_gps = true;
         } else if (has_gps) {
             // gps was valid before, we apply the filter
             float covariance = 250;
-            if (gps_degradated) covariance = 1000;
+            if (gps_degradated) covariance = 2000;
             core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, covariance);
             if(publish_debug) {
                 auto m = core.om2.h(core.ekf.getState());
