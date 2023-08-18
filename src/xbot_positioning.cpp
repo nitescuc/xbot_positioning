@@ -123,21 +123,25 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     imu_vz = msg->angular_velocity.z - gyro_offset;
     // vx and imu_vx are not supposed to be way off (even though accelerometer might not be properly calibrated and have drift) 
     // so it makes sense to define a covariance based on the difference
-    double vx_covariance = 0.01;
-    double updated_vx = 0.0;
-    if (is_vx_valid) {
-        // fusion vx and imu_vx with some probability
-        updated_vx = (vx + 3*imu_vx)/4;
-    } else {
-        updated_vx = imu_vx;
-        ROS_WARN_STREAM("vx invalid, using filered vx=" << updated_vx);
-    }
-    if (vx != 0.0) {
-        vx_covariance = (vx - imu_vx)/vx;
-    }
+    // double vx_covariance = 0.01;
+    // double updated_vx = 0.0;
+    // if (is_vx_valid) {
+    //     // fusion vx and imu_vx with some probability
+    //     updated_vx = (vx + 3*imu_vx)/4;
+    // } else {
+    //     updated_vx = imu_vx;
+    //     ROS_WARN_STREAM("vx invalid, using filered vx=" << updated_vx);
+    // }
+    // if (vx != 0.0) {
+    //     vx_covariance = (vx - imu_vx)/vx;
+    // }
 
-    core.predict(updated_vx, msg->angular_velocity.z - gyro_offset, dt);
-    auto x = core.updateSpeed(updated_vx, msg->angular_velocity.z - gyro_offset, vx_covariance*vx_covariance);
+    if (is_vx_valid) {
+        core.predict(vx, msg->angular_velocity.z - gyro_offset, dt);
+        auto x = core.updateSpeed(vx, msg->angular_velocity.z - gyro_offset, 0.01);
+    } else {
+        ROS_WARN_STREAM("vx invalid, will not update speed");
+    }
 
     odometry.header.stamp = ros::Time::now();
     odometry.header.seq++;
