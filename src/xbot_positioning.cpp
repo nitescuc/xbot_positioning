@@ -48,6 +48,7 @@ sensor_msgs::Imu last_imu;
 ros::Time gyro_calibration_start;
 double gyro_offset;
 int gyro_offset_samples;
+double accelerometer_offset;
 
 // Current speed calculated by wheel ticks
 double vx = 0.0;
@@ -90,9 +91,11 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
                 ROS_INFO_STREAM("Started gyro calibration");
                 gyro_calibration_start = msg->header.stamp;
                 gyro_offset = 0;
+                accelerometer_offset = 0;
             }
             gyro_offset += msg->angular_velocity.z;
             gyro_offset_samples++;
+            accelerometer_offset += msg->linear_acceleration.x;
             if ((msg->header.stamp - gyro_calibration_start).toSec() < 5) {
                 last_imu = *msg;
                 return;
@@ -100,11 +103,14 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
             has_gyro = true;
             if (gyro_offset_samples > 0) {
                 gyro_offset /= gyro_offset_samples;
+                accelerometer_offset /= gyro_offset_samples;
             } else {
                 gyro_offset = 0;
+                accelerometer_offset = 0;
             }
             gyro_offset_samples = 0;
             ROS_INFO_STREAM("Calibrated gyro offset: " << gyro_offset);
+            ROS_INFO_STREAM("Calibrated accelerometer offset: " << accelerometer_offset);
         } else {
             ROS_WARN("Skipped gyro calibration");
             has_gyro = true;
@@ -113,7 +119,7 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     }
 
     double dt = (msg->header.stamp - last_imu.header.stamp).toSec();
-    double imu_vx = filter_vx + msg->linear_acceleration.x * dt;
+    double imu_vx = filter_vx + (msg->linear_acceleration.x - accelerometer_offset) * dt;
     imu_vz = msg->angular_velocity.z - gyro_offset;
     // vx and imu_vx are not supposed to be way off (even though accelerometer might not be properly calibrated and have drift) 
     // so it makes sense to define a covariance based on the difference
@@ -379,6 +385,7 @@ int main(int argc, char **argv) {
     has_ticks = false;
     gyro_offset = 0;
     gyro_offset_samples = 0;
+    accelerometer_offset = 0;
 
     valid_gps_samples = 0;
     gps_outlier_count = 0;
