@@ -57,9 +57,6 @@ bool is_vx_valid = true;
 // Current speed computed by the filter
 double filter_vx = 0.0;
 
-// Current angular velocity from Gyro
-double imu_vz = 0.0;
-
 // Min speed for motion vector to be fed into kalman filter
 double min_speed = 0.0;
 
@@ -119,29 +116,24 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     }
 
     double dt = (msg->header.stamp - last_imu.header.stamp).toSec();
-    double imu_vx = filter_vx + (msg->linear_acceleration.x - accelerometer_offset) * dt;
-    imu_vz = msg->angular_velocity.z - gyro_offset;
+    // double imu_vx = filter_vx + (msg->linear_acceleration.x - accelerometer_offset) * dt;
     // vx and imu_vx are not supposed to be way off (even though accelerometer might not be properly calibrated and have drift) 
     // so it makes sense to define a covariance based on the difference
-    // double vx_covariance = 0.01;
-    // double updated_vx = 0.0;
-    // if (is_vx_valid) {
-    //     // fusion vx and imu_vx with some probability
-    //     updated_vx = (vx + 3*imu_vx)/4;
-    // } else {
-    //     updated_vx = imu_vx;
-    //     ROS_WARN_STREAM("vx invalid, using filered vx=" << updated_vx);
-    // }
+    double vx_covariance = 0.01;
+    double updated_vx = 0.0;
+    if (is_vx_valid) {
+        // fusion vx and imu_vx with some probability
+        updated_vx = vx; //(vx + 3*imu_vx)/4;
+    } else {
+        updated_vx = filter_vx;
+        ROS_WARN_STREAM("vx invalid, using filtered vx=" << updated_vx);
+    }
     // if (vx != 0.0) {
     //     vx_covariance = (vx - imu_vx)/vx;
     // }
 
-    if (is_vx_valid) {
-        core.predict(vx, msg->angular_velocity.z - gyro_offset, dt);
-        auto x = core.updateSpeed(vx, msg->angular_velocity.z - gyro_offset, 0.01);
-    } else {
-        ROS_WARN_STREAM("vx invalid, will not update speed");
-    }
+    core.predict(updated_vx, msg->angular_velocity.z - gyro_offset, dt);
+    auto x = core.updateSpeed(updated_vx, msg->angular_velocity.z - gyro_offset, 0.01);
 
     odometry.header.stamp = ros::Time::now();
     odometry.header.seq++;
@@ -236,10 +228,10 @@ void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
 
     // detect wheel sliping
 
-    // wheel angular speed should be consistent with imu_vz
+    // limit wheel angular speed
     double angular_speed = (d_wheel_r - d_wheel_l)/dt;
     if(abs(angular_speed) > 4) {
-        ROS_WARN_STREAM("got angular_speed different of imu_vz (" << angular_speed << ", " << imu_vz << ") - droping vx");
+        ROS_WARN_STREAM("got inconsistent angular_speed (" << angular_speed << ") - droping vx");
         vx = 0.0;
         is_vx_valid = false;
         return;
