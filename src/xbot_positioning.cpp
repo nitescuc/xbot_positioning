@@ -116,21 +116,26 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     }
 
     double dt = (msg->header.stamp - last_imu.header.stamp).toSec();
-    // double imu_vx = filter_vx + (msg->linear_acceleration.x - accelerometer_offset) * dt;
-    // vx and imu_vx are not supposed to be way off (even though accelerometer might not be properly calibrated and have drift) 
-    // so it makes sense to define a covariance based on the difference
+    double imu_vx = filter_vx + (msg->linear_acceleration.x - accelerometer_offset) * dt;
     double vx_covariance = 0.01;
     double updated_vx = 0.0;
     if (is_vx_valid) {
-        // fusion vx and imu_vx with some probability
-        updated_vx = vx; //(vx + 3*imu_vx)/4;
+        // use accelerometer only if we have valid gps to avoid drift
+        if (gps_enabled && has_gps) {
+            // fusion vx and imu_vx with some arbitrary probability
+            updated_vx = (vx + 3 * imu_vx) / 4;
+        } else {
+            updated_vx = vx;
+        }
     } else {
         updated_vx = filter_vx;
         ROS_WARN_STREAM("vx invalid, using filtered vx=" << updated_vx);
     }
-    // if (vx != 0.0) {
-    //     vx_covariance = (vx - imu_vx)/vx;
-    // }
+    // vx and imu_vx are not supposed to be way off (even though accelerometer might not be properly calibrated and have drift) 
+    // so it makes sense to define a covariance based on the difference
+    if (vx != 0.0) {
+        vx_covariance = (vx - imu_vx)/vx;
+    }
 
     core.predict(updated_vx, msg->angular_velocity.z - gyro_offset, dt);
     auto x = core.updateSpeed(updated_vx, msg->angular_velocity.z - gyro_offset, 0.01);
