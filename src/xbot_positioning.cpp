@@ -22,6 +22,7 @@
 #include "xbot_positioning/GPSControlSrv.h"
 #include "xbot_positioning/GPSEnableFloatRtkSrv.h"
 #include "xbot_positioning/SetPoseSrv.h"
+#include "xbot_positioning/CalibrateGyroSrv.h"
 
 ros::Publisher odometry_pub;
 ros::Publisher xbot_absolute_pose_pub;
@@ -275,6 +276,20 @@ bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPose
     return true;
 }
 
+bool calibrateGyro(xbot_positioning::CalibrateGyroSrvRequest &req, xbot_positioning::CalibrateGyroSrvResponse &res) {
+    has_gyro = false;
+    // wait for the gyro to be calibrated, 10 seconds max
+    ros::Time start = ros::Time::now();
+    while(!has_gyro) {
+        ros::Duration(0.1).sleep();
+        if((ros::Time::now() - start).toSec() > 10) {
+            ROS_ERROR("Gyro calibration failed not completed after 10s");
+            return false;
+        }
+    }
+    return true;
+}
+
 void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     bool gps_degradated = false;
     if(!gps_enabled) {
@@ -394,6 +409,7 @@ int main(int argc, char **argv) {
     ros::ServiceServer gps_service = n.advertiseService("xbot_positioning/set_gps_state", setGpsState);
     ros::ServiceServer gps_enable_float_rtk_service = n.advertiseService("xbot_positioning/set_float_rtk_enabled", setGpsFloatRtkEnabled);
     ros::ServiceServer pose_service = n.advertiseService("xbot_positioning/set_robot_pose", setPose);
+    ros::ServiceServer calibrate_gyro_service = n.advertiseService("xbot_positioning/calibrate_gyro", calibrateGyro);
 
     paramNh.param("skip_gyro_calibration", skip_gyro_calibration, false);
     paramNh.param("gyro_offset", gyro_offset, 0.0);
