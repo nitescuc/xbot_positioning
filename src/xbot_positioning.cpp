@@ -281,7 +281,8 @@ bool calibrateGyro(xbot_positioning::CalibrateGyroSrvRequest &req, xbot_position
     // wait for the gyro to be calibrated, 10 seconds max
     ros::Time start = ros::Time::now();
     while(!has_gyro) {
-        ros::Duration(0.1).sleep();
+        ros::spinOnce();
+        ros::Duration(0.01).sleep();
         if((ros::Time::now() - start).toSec() > 10) {
             ROS_ERROR("Gyro calibration failed not completed after 10s");
             return false;
