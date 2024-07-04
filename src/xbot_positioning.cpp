@@ -451,6 +451,7 @@ int main(int argc, char **argv) {
     ros::NodeHandle paramNh("~");
 
     ros::ServiceServer gps_service = n.advertiseService("xbot_positioning/set_gps_state", setGpsState);
+    ros::ServiceServer slam_service = n.advertiseService("xbot_positioning/set_slam_state", setSlamEnabled);
     ros::ServiceServer gps_enable_float_rtk_service = n.advertiseService("xbot_positioning/set_float_rtk_enabled", setGpsFloatRtkEnabled);
     ros::ServiceServer pose_service = n.advertiseService("xbot_positioning/set_robot_pose", setPose);
     ros::ServiceServer calibrate_gyro_service = n.advertiseService("xbot_positioning/calibrate_gyro", calibrateGyro);
