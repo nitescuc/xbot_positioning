@@ -21,6 +21,7 @@
 #include "xbot_positioning/KalmanState.h"
 #include "xbot_positioning/GPSControlSrv.h"
 #include "xbot_positioning/GPSEnableFloatRtkSrv.h"
+#include "xbot_positioning/SlamControlSrv.h"
 #include "xbot_positioning/SetPoseSrv.h"
 #include "xbot_positioning/CalibrateGyroSrv.h"
 
@@ -76,6 +77,8 @@ xbot_msgs::AbsolutePose xb_absolute_pose_msg;
 
 bool gps_enabled = true;
 uint16_t gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+bool slam_enabled = false;
+bool use_slam = false;
 int gps_outlier_count = 0;
 int valid_gps_samples = 0;
 
@@ -263,6 +266,11 @@ bool setGpsFloatRtkEnabled(xbot_positioning::GPSEnableFloatRtkSrvRequest &req, x
     return true;
 }
 
+bool setSlamEnabled(xbot_positioning::SlamControlSrvRequest &req, xbot_positioning::SlamControlSrvResponse &res) {
+    slam_enabled = req.slam_enabled;
+    return true;
+}
+
 bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPoseSrvResponse &res) {
     tf2::Quaternion q;
     tf2::fromMsg(req.robot_pose.orientation, q);
@@ -281,13 +289,40 @@ bool calibrateGyro(xbot_positioning::CalibrateGyroSrvRequest &req, xbot_position
     // wait for the gyro to be calibrated, 10 seconds max
     ros::Time start = ros::Time::now();
     while(!has_gyro) {
-        ros::Duration(0.1).sleep();
+        ros::spinOnce();
+        ros::Duration(0.01).sleep();
         if((ros::Time::now() - start).toSec() > 10) {
             ROS_ERROR("Gyro calibration failed not completed after 10s");
             return false;
         }
     }
     return true;
+}
+
+void onSlamPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr &msg) {
+    if (!slam_enabled) return;
+    if (!use_slam) {
+        ROS_INFO_STREAM_THROTTLE(60, "slam enabled but not used");
+        return;
+    }
+
+    if (msg->pose.covariance[0] > 1000) {
+        ROS_INFO_STREAM_THROTTLE(60, "slam required but covariance too high");
+        return;
+    }
+
+    tf2::Quaternion q;
+    tf2::fromMsg(msg->pose.pose.orientation, q);
+    tf2::Matrix3x3 m(q);
+    double unused1, unused2, yaw;
+    m.getRPY(unused1, unused2, yaw);
+
+    tf2::Vector3 gps_pos(msg->pose.pose.position.x,msg->pose.pose.position.y,msg->pose.pose.position.z);
+
+    core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.covariance[0]);
+    core.updateOrientation(yaw, msg->pose.covariance[35]);
+    auto ms = core.om2.h(core.ekf.getState());
+    filter_vx = ms.vx();
 }
 
 void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
@@ -299,7 +334,14 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     // TODO fuse with high covariance?
     if((msg->flags & (gps_precision_flags)) == 0) {
         ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed. Flags: " << (int)msg->flags << ", precision: " << (int)gps_precision_flags);
-        return;
+        if (slam_enabled) {
+            ROS_INFO_STREAM_THROTTLE(1, "Use slam.");
+            use_slam = true;
+            return;
+        } else {
+            use_slam = false;
+            return;
+        }
     }
 
     if(msg->position_accuracy > max_gps_accuracy) {
@@ -321,6 +363,8 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         last_gps_time = ros::Time::now();
         return;
     }
+
+    use_slam = false;
 
     tf2::Vector3 gps_pos(msg->pose.pose.position.x,msg->pose.pose.position.y,msg->pose.pose.position.z);
     tf2::Vector3 last_gps_pos(last_gps.pose.pose.position.x,last_gps.pose.pose.position.y,last_gps.pose.pose.position.z);
@@ -436,6 +480,7 @@ int main(int argc, char **argv) {
 
     ros::Subscriber imu_sub = paramNh.subscribe("imu_in", 10, onImu);
     ros::Subscriber pose_sub = paramNh.subscribe("xb_pose_in", 10, onPose);
+    ros::Subscriber slam_sub = paramNh.subscribe("poseupdate", 10, onSlamPose);
     ros::Subscriber wheel_tick_sub = paramNh.subscribe("wheel_ticks_in", 10, onWheelTicks);
 
     ros::spin();
