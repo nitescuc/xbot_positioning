@@ -31,7 +31,6 @@ add_service_files(
         GPSControlSrv.srv
         GPSEnableFloatRtkSrv.srv
         SetPoseSrv.srv
-        CalibrateGyroSrv.srv
 )
 
 generate_messages(

@@ -22,9 +22,11 @@
 #include "xbot_positioning/GPSControlSrv.h"
 #include "xbot_positioning/GPSEnableFloatRtkSrv.h"
 #include "xbot_positioning/SetPoseSrv.h"
-#include "xbot_positioning/CalibrateGyroSrv.h"
+
+#include <mutex>
 
 ros::Publisher odometry_pub;
+ros::Publisher initialpose_pub;
 ros::Publisher xbot_absolute_pose_pub;
 
 // Debug Publishers
@@ -71,16 +73,77 @@ bool publish_debug;
 double antenna_offset_x, antenna_offset_y;
 
 nav_msgs::Odometry odometry;
+geometry_msgs::PoseWithCovarianceStamped initialpose;
 xbot_positioning::KalmanState state_msg;
 xbot_msgs::AbsolutePose xb_absolute_pose_msg;
 
 bool gps_enabled = true;
+bool allow_float_rtk = false;
 uint16_t gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
 int gps_outlier_count = 0;
 int valid_gps_samples = 0;
+std::string initialpose_topic = "/initialpose";
 
 ros::Time last_gps_time(0.0);
+bool pub_map_transform, pub_odom_transform;
+std::string odom_frame_id = "odom";
 
+std::recursive_mutex xbot_pos_mutex;
+
+void publish_initial_pose(float pos_x, float pos_y, float theta, float cov_x, float cov_y, float cov_theta) {
+    std::lock_guard<std::recursive_mutex> lk{xbot_pos_mutex};
+    initialpose.header.stamp = ros::Time::now();
+    initialpose.header.seq++;
+    initialpose.header.frame_id = "map";
+    // initialpose.pose = msg->pose;
+    initialpose.pose.pose.position.x = pos_x;
+    initialpose.pose.pose.position.y = pos_y;
+    initialpose.pose.pose.position.z = 0.0;
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, theta);
+    initialpose.pose.pose.orientation = tf2::toMsg(q);
+
+    initialpose.pose.covariance[0] = cov_x;
+    initialpose.pose.covariance[7] = cov_y;
+    initialpose.pose.covariance[14] = 0.0;
+    initialpose.pose.covariance[35] = cov_theta;
+    initialpose.pose.covariance[21] = 0.0;
+    initialpose.pose.covariance[28] = 0.0;
+    initialpose_pub.publish(initialpose);
+}
+
+void publish_odometry(float pos_x, float pos_y, float theta, float cov_x, float cov_y, float cov_theta) {
+    std::lock_guard<std::recursive_mutex> lk{xbot_pos_mutex};
+
+    odometry.header.stamp = ros::Time::now();
+    odometry.header.seq++;
+    odometry.header.frame_id = odom_frame_id;
+    odometry.child_frame_id = "base_link";
+    odometry.pose.pose.position.x = pos_x;
+    odometry.pose.pose.position.y = pos_y;
+    odometry.pose.pose.position.z = 0;
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, theta);
+    odometry.pose.pose.orientation = tf2::toMsg(q);
+    odometry.pose.covariance[0] = cov_x;
+    odometry.pose.covariance[7] = cov_y;
+    odometry.pose.covariance[14] = 0.0;
+    odometry.pose.covariance[35] = cov_theta;
+
+    if (pub_odom_transform) {
+        geometry_msgs::TransformStamped odom_trans;
+        odom_trans.header = odometry.header;
+        odom_trans.child_frame_id = odometry.child_frame_id;
+        odom_trans.transform.translation.x = odometry.pose.pose.position.x;
+        odom_trans.transform.translation.y = odometry.pose.pose.position.y;
+        odom_trans.transform.translation.z = odometry.pose.pose.position.z;
+        odom_trans.transform.rotation = odometry.pose.pose.orientation;
+
+        static tf2_ros::TransformBroadcaster transform_broadcaster;
+        transform_broadcaster.sendTransform(odom_trans);
+    }
+    odometry_pub.publish(odometry);
+}
 
 void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     if(!has_gyro) {
@@ -127,35 +190,60 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
         updated_vx = vx; //(vx + 3*imu_vx)/4;
     } else {
         updated_vx = filter_vx;
-        ROS_WARN_STREAM("vx invalid, using filtered vx=" << updated_vx);
+        // ROS_WARN_STREAM("vx invalid, using filtered vx=" << updated_vx);
     }
     // if (vx != 0.0) {
     //     vx_covariance = (vx - imu_vx)/vx;
     // }
+
+    if (pub_map_transform) {
+        ROS_INFO_STREAM_THROTTLE(60, "publishing map->odom transform");
+        tf2::Quaternion q;
+        q.setRPY(0.0, 0.0, 0.0);
+        geometry_msgs::TransformStamped odom_trans;
+        odom_trans.header.stamp = ros::Time::now();
+        odom_trans.header.frame_id = "map";
+        odom_trans.child_frame_id = "odom";
+        odom_trans.transform.translation.x = 0;
+        odom_trans.transform.translation.y = 0;
+        odom_trans.transform.translation.z = 0;
+        odom_trans.transform.rotation = tf2::toMsg(q);
+
+        static tf2_ros::TransformBroadcaster transform_broadcaster;
+        transform_broadcaster.sendTransform(odom_trans);
+    }
 
     core.predict(updated_vx, msg->angular_velocity.z - gyro_offset, dt);
     auto x = core.updateSpeed(updated_vx, msg->angular_velocity.z - gyro_offset, 0.01);
 
     odometry.header.stamp = ros::Time::now();
     odometry.header.seq++;
-    odometry.header.frame_id = "map";
+    odometry.header.frame_id = odom_frame_id;
     odometry.child_frame_id = "base_link";
     odometry.pose.pose.position.x = x.x_pos();
     odometry.pose.pose.position.y = x.y_pos();
     odometry.pose.pose.position.z = 0;
-    tf2::Quaternion q(0.0, 0.0, x.theta());
+    odometry.twist.twist.linear.x = x.vx();
+    odometry.twist.twist.linear.y = 0;
+    odometry.twist.twist.linear.z = 0;
+    odometry.twist.twist.angular.z = x.vr();
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, x.theta());
     odometry.pose.pose.orientation = tf2::toMsg(q);
 
-    geometry_msgs::TransformStamped odom_trans;
-    odom_trans.header = odometry.header;
-    odom_trans.child_frame_id = odometry.child_frame_id;
-    odom_trans.transform.translation.x = odometry.pose.pose.position.x;
-    odom_trans.transform.translation.y = odometry.pose.pose.position.y;
-    odom_trans.transform.translation.z = odometry.pose.pose.position.z;
-    odom_trans.transform.rotation = odometry.pose.pose.orientation;
+    if (pub_odom_transform) {
+        geometry_msgs::TransformStamped odom_trans;
+        odom_trans.header = odometry.header;
+        odom_trans.child_frame_id = odometry.child_frame_id;
+        odom_trans.transform.translation.x = odometry.pose.pose.position.x;
+        odom_trans.transform.translation.y = odometry.pose.pose.position.y;
+        odom_trans.transform.translation.z = odometry.pose.pose.position.z;
+        odom_trans.transform.rotation = odometry.pose.pose.orientation;
 
-    static tf2_ros::TransformBroadcaster transform_broadcaster;
-    transform_broadcaster.sendTransform(odom_trans);
+        static tf2_ros::TransformBroadcaster transform_broadcaster;
+        transform_broadcaster.sendTransform(odom_trans);
+    }
+    odometry_pub.publish(odometry);
 
     auto state = core.getState();
     filter_vx = state.vx();
@@ -168,8 +256,6 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
 
         kalman_state.publish(state_msg);
     }
-
-    odometry_pub.publish(odometry);
 
     xb_absolute_pose_msg.header = odometry.header;
     xb_absolute_pose_msg.sensor_stamp = 0;
@@ -232,7 +318,7 @@ void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
     // limit wheel angular speed
     double angular_speed = (d_wheel_r - d_wheel_l)/dt;
     if(abs(angular_speed) > 4) {
-        ROS_WARN_STREAM("got inconsistent angular_speed (" << angular_speed << ") - droping vx");
+        // ROS_WARN_STREAM("got inconsistent angular_speed (" << angular_speed << ") - droping vx");
         vx = 0.0;
         is_vx_valid = false;
         return;
@@ -240,7 +326,7 @@ void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
 
     // consider max possible robot speed of 0.50 (TODO get it from parameters)
     if(abs(vx) > 1.0) {
-        ROS_WARN_STREAM("got vx > 1.0 (" << vx << ") - dropping measurement");
+        // ROS_WARN_STREAM("got vx > 1.0 (" << vx << ") - dropping measurement");
         vx = 0.0;
         is_vx_valid = false;
         return;
@@ -273,21 +359,13 @@ bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPose
 
     m.getRPY(unused1, unused2, yaw);
     core.setState(req.robot_pose.position.x, req.robot_pose.position.y, yaw,0,0);
-    return true;
-}
 
-bool calibrateGyro(xbot_positioning::CalibrateGyroSrvRequest &req, xbot_positioning::CalibrateGyroSrvResponse &res) {
-    has_gyro = false;
-    // wait for the gyro to be calibrated, 10 seconds max
-    ros::Time start = ros::Time::now();
-    while(!has_gyro) {
-        ros::spinOnce();
-        ros::Duration(0.01).sleep();
-        if((ros::Time::now() - start).toSec() > 10) {
-            ROS_ERROR("Gyro calibration failed not completed after 10s");
-            return false;
-        }
-    }
+    ROS_INFO_STREAM("xbot_positionning: setPose: " << req.robot_pose.position.x << ", " << req.robot_pose.position.y << ", " << yaw);
+    ROS_INFO_STREAM("xbot_positionning: publishing odometry");
+    publish_odometry(req.robot_pose.position.x, req.robot_pose.position.y, yaw, 0.0001, 0.0001, 0.01);
+
+    ROS_INFO_STREAM("xbot_positionning: publishing initial pose");
+    publish_initial_pose(req.robot_pose.position.x, req.robot_pose.position.y, yaw, 0.0001, 0.0001, 0.01);
     return true;
 }
 
@@ -303,17 +381,18 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         return;
     }
 
-    if(msg->position_accuracy > max_gps_accuracy) {
-        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy << ", limit is:" << max_gps_accuracy);
-        return;
-    }
     if((msg->flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT) != 0) {
         gps_degradated = true;
     }
 
+    if(msg->position_accuracy > max_gps_accuracy) {
+        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy << ", limit is:" << max_gps_accuracy);
+        return;
+    }
+
     double time_since_last_gps = (ros::Time::now() - last_gps_time).toSec();
     if (time_since_last_gps > 5.0) {
-        ROS_WARN_STREAM("Last GPS was " << time_since_last_gps << " seconds ago.");
+        // ROS_WARN_STREAM("Last GPS was " << time_since_last_gps << " seconds ago.");
         has_gps = false;
         valid_gps_samples = 0;
         gps_outlier_count = 0;
@@ -359,10 +438,11 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
                 dbg_expected_motion_vector.publish(dbg);
             }
             if(std::sqrt(std::pow(msg->motion_vector.x, 2)+std::pow(msg->motion_vector.y, 2)) >= min_speed) {
-                core.updateOrientation2(msg->motion_vector.x, msg->motion_vector.y, 10000.0);
+                core.updateOrientation2(msg->motion_vector.x, msg->motion_vector.y, 1000.0);
             }
         }
-        auto m = core.om2.h(core.ekf.getState());
+        auto state = core.getState();
+        auto m = core.om2.h(state);
         filter_vx = m.vx();
     } else {
         ROS_WARN_STREAM("GPS outlier found. Distance was: " << distance_to_last_gps);
@@ -379,9 +459,6 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
             gps_outlier_count = 0;
         }
     }
-
-
-
 }
 
 int main(int argc, char **argv) {
@@ -407,10 +484,17 @@ int main(int argc, char **argv) {
     ros::NodeHandle n;
     ros::NodeHandle paramNh("~");
 
+    odometry_pub = paramNh.advertise<nav_msgs::Odometry>("odom_out", 50);
+    initialpose_pub = paramNh.advertise<geometry_msgs::PoseWithCovarianceStamped>(initialpose_topic, 50);
+    xbot_absolute_pose_pub = paramNh.advertise<xbot_msgs::AbsolutePose>("xb_pose_out", 50);
+    if(publish_debug) {
+        dbg_expected_motion_vector = paramNh.advertise<geometry_msgs::Vector3>("debug_expected_motion_vector", 50);
+        kalman_state = paramNh.advertise<xbot_positioning::KalmanState>("kalman_state", 50);
+    }
+
     ros::ServiceServer gps_service = n.advertiseService("xbot_positioning/set_gps_state", setGpsState);
     ros::ServiceServer gps_enable_float_rtk_service = n.advertiseService("xbot_positioning/set_float_rtk_enabled", setGpsFloatRtkEnabled);
     ros::ServiceServer pose_service = n.advertiseService("xbot_positioning/set_robot_pose", setPose);
-    ros::ServiceServer calibrate_gyro_service = n.advertiseService("xbot_positioning/calibrate_gyro", calibrateGyro);
 
     paramNh.param("skip_gyro_calibration", skip_gyro_calibration, false);
     paramNh.param("gyro_offset", gyro_offset, 0.0);
@@ -419,7 +503,15 @@ int main(int argc, char **argv) {
     paramNh.param("debug", publish_debug, false);
     paramNh.param("antenna_offset_x", antenna_offset_x, 0.0);
     paramNh.param("antenna_offset_y", antenna_offset_y, 0.0);
+    paramNh.param("pub_map_transform", pub_map_transform, true);
+    paramNh.param("pub_odom_transform", pub_odom_transform, true);
+    paramNh.param("odom_frame_id", odom_frame_id, std::string("odom"));
+    paramNh.param("gps_float_rtk_enabled", allow_float_rtk, false);
 
+    if (allow_float_rtk) {
+        gps_precision_flags = xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT | xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED;
+    }
+    
     core.setAntennaOffset(antenna_offset_x, antenna_offset_y);
 
     ROS_INFO_STREAM("Antenna offset: " << antenna_offset_x << ", " << antenna_offset_y);
@@ -428,16 +520,9 @@ int main(int argc, char **argv) {
         ROS_WARN_STREAM("Using gyro offset of: " << gyro_offset);
     }
 
-    odometry_pub = paramNh.advertise<nav_msgs::Odometry>("odom_out", 50);
-    xbot_absolute_pose_pub = paramNh.advertise<xbot_msgs::AbsolutePose>("xb_pose_out", 50);
-    if(publish_debug) {
-        dbg_expected_motion_vector = paramNh.advertise<geometry_msgs::Vector3>("debug_expected_motion_vector", 50);
-        kalman_state = paramNh.advertise<xbot_positioning::KalmanState>("kalman_state", 50);
-    }
-
-    ros::Subscriber imu_sub = paramNh.subscribe("imu_in", 10, onImu);
-    ros::Subscriber pose_sub = paramNh.subscribe("xb_pose_in", 10, onPose);
-    ros::Subscriber wheel_tick_sub = paramNh.subscribe("wheel_ticks_in", 10, onWheelTicks);
+    //ros::Subscriber imu_sub = paramNh.subscribe("imu_in", 10, onImu);
+    //ros::Subscriber pose_sub = paramNh.subscribe("xb_pose_in", 10, onPose);
+    //ros::Subscriber wheel_tick_sub = paramNh.subscribe("wheel_ticks_in", 10, onWheelTicks);
 
     ros::spin();
     return 0;
